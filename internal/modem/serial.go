@@ -20,6 +20,21 @@ func (opener SerialOpener) Open(ctx context.Context, port Port) (Client, error) 
 	if path == "" {
 		return nil, errors.New("modem: candidate has no AT port")
 	}
+	// Some downstream WWAN drivers (UFI003 / OpenStick 410 bam-dmux) only answer
+	// a read that is already blocked in the driver, which breaks the poll plus
+	// non-blocking model every serial consumer uses. When a bridge exposes the
+	// same port as a PTY, prefer the PTY: it behaves like an ordinary serial
+	// port while the bridge keeps the blocking read outstanding.
+	//
+	// The decision has to happen before isNativeWWANATPath, because the bridged
+	// PTY must take the ordinary serial path, not the WWAN character-device one.
+	useNativeWWAN := isNativeWWANATPath(path)
+	if useNativeWWAN {
+		if bridged := bridgedATPath(path); bridged != "" {
+			path = bridged
+			useNativeWWAN = false
+		}
+	}
 	release, ok := tryAcquireATPort(path)
 	if !ok {
 		return nil, fmt.Errorf("open AT port %s: %w", path, ErrATPortBusy)
@@ -31,7 +46,7 @@ func (opener SerialOpener) Open(ctx context.Context, port Port) (Client, error) 
 		}
 	}()
 
-	if isNativeWWANATPath(path) {
+	if useNativeWWAN {
 		rawPort, err := openNativeWWANATTransport(path)
 		if err != nil {
 			return nil, fmt.Errorf("open WWAN AT port %s: %w", path, err)
